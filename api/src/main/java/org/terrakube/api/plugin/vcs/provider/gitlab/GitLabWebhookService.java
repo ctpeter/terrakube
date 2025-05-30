@@ -7,7 +7,9 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -54,6 +56,7 @@ public class GitLabWebhookService extends WebhookServiceBase {
             }
 
             result.setValid(true);
+
             log.info("Parsing GitLab webhook payload");
 
             JsonNode rootNode = objectMapper.readTree(jsonPayload);
@@ -62,34 +65,35 @@ public class GitLabWebhookService extends WebhookServiceBase {
 
             if (event.equals("push")) {
                 String[] ref = rootNode.path("ref").asText().split("/");
-                String branch = String.join("/", java.util.Arrays.copyOfRange(ref, 2, ref.length));
-                result.setBranch(branch);
+                String[] extractedBranch = Arrays.copyOfRange(ref, 2, ref.length);
+                result.setBranch(String.join("/", extractedBranch));
 
                 String user = rootNode.path("user_username").asText();
                 result.setCreatedBy(user);
 
                 result.setFileChanges(new ArrayList<>());
-
                 try {
                     GitlabWebhookModel gitlabWebhookModel = new ObjectMapper().readValue(jsonPayload, GitlabWebhookModel.class);
                     result.setCommit(gitlabWebhookModel.getCheckoutSha());
 
                     gitlabWebhookModel.getCommits().forEach(commitData -> {
-                        commitData.getModified().forEach(modified -> {
+                        for (String modified : commitData.getModified()) {
                             result.getFileChanges().add(modified);
                             log.info("Modified Gitlab Object: {}", modified);
-                        });
-                        commitData.getRemoved().forEach(removed -> {
+                        }
+
+                        for (String removed : commitData.getRemoved()) {
                             result.getFileChanges().add(removed);
                             log.info("Removed Gitlab Object: {}", removed);
-                        });
-                        commitData.getAdded().forEach(added -> {
+                        }
+
+                        for (String added : commitData.getAdded()) {
                             result.getFileChanges().add(added);
                             log.info("New Gitlab Object: {}", added);
-                        });
+                        }
                     });
                 } catch (JsonProcessingException e) {
-                    log.error("Error parsing commit data", e);
+                    log.error(e.getMessage());
                 }
             }
         } catch (JsonProcessingException e) {
@@ -102,10 +106,9 @@ public class GitLabWebhookService extends WebhookServiceBase {
         String id = "";
         String secret = Base64.getEncoder()
                 .encodeToString(workspace.getId().toString().getBytes(StandardCharsets.UTF_8));
-        String ownerAndRepo = extractOwnerAndRepo(workspace.getSource());
+        String ownerAndRepo = String.join("/", extractOwnerAndRepo(workspace.getSource()));
         String token = workspace.getVcs().getAccessToken();
         String webhookUrl = String.format("https://%s/webhook/v1/%s", hostname, webhookId);
-
         RestTemplate restTemplate = new RestTemplate();
 
         HttpHeaders headers = new HttpHeaders();
@@ -113,19 +116,18 @@ public class GitLabWebhookService extends WebhookServiceBase {
         headers.set("Content-Type", "application/json");
         headers.set("Authorization", "Bearer " + token);
 
-        String body = String.format("{\"url\":\"%s\",\"push_events\":true,\"enable_ssl_verification\":false,\"token\":\"%s\"}",
-                webhookUrl, secret);
+        String body = "{\"url\":\"" + webhookUrl
+                + "\",\"push_events\":\"true\",\"enable_ssl_verification\":\"false\",\"token\":\"" + secret + "\"}";
 
         log.info(body);
 
         HttpEntity<String> entity = new HttpEntity<>(body, headers);
         String projectId = "";
-
         try {
             log.info("Search gitlab project id using {}, {}", ownerAndRepo, workspace.getVcs().getApiUrl());
             projectId = getGitlabProjectId(ownerAndRepo, token, workspace.getVcs().getApiUrl());
         } catch (InterruptedException | IOException e) {
-            log.error("Failed to get GitLab project ID", e);
+            log.error(e.getMessage());
             Thread.currentThread().interrupt();
         }
 
@@ -141,19 +143,18 @@ public class GitLabWebhookService extends WebhookServiceBase {
                 JsonNode rootNode = objectMapper.readTree(response.getBody());
                 id = rootNode.path("id").asText();
             } catch (Exception e) {
-                log.error("Error parsing webhook creation response", e);
+                log.error("Error parsing JSON response", e);
             }
 
             log.info("GitLab Hook created successfully for workspace {}/{} with id {}",
                     workspace.getOrganization().getName(), workspace.getName(), id);
-        } else {
-            log.error("Failed to create webhook: {}", response.getBody());
         }
 
         return id;
     }
 
-    private String getGitlabProjectId(String ownerAndRepo, String accessToken, String gitlabBaseUrl) throws IOException, InterruptedException {
+    private String getGitlabProjectId(String ownerAndRepo, String accessToken, String gitlabBaseUrl)
+            throws IOException, InterruptedException {
         String projectId = "";
         HttpClient client = HttpClient.newHttpClient();
         HttpRequest request = HttpRequest.newBuilder()
@@ -166,38 +167,28 @@ public class GitLabWebhookService extends WebhookServiceBase {
         HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
 
         if (response.statusCode() == 200) {
-            log.info("Response from GitLab: {}", response.body());
+            log.info("Response from Gitlab: {}", response.body());
             JsonNode jsonNode = objectMapper.readTree(response.body());
 
-            for (JsonNode projectNode : jsonNode) {
-                String pathWithNamespace = projectNode.path("path_with_namespace").asText();
-                if (pathWithNamespace.equalsIgnoreCase(ownerAndRepo)) {
-                    projectId = projectNode.path("id").asText();
-                    log.info("Matched Project ID: {}", projectId);
-                    break;
-                }
-            }
-
-            if (projectId.isEmpty()) {
-                log.warn("No matching GitLab project found for {}", ownerAndRepo);
-            }
+            projectId = jsonNode.get(0).get("id").asText();
+            log.info("Parsed Project ID: {}", projectId);
         } else {
             log.error("Failed to retrieve project ID. HTTP Status: {}", response.statusCode());
             log.error("Response: {}", response.body());
         }
-
         return projectId;
     }
 
     public void deleteWebhook(Workspace workspace, String webhookRemoteId) {
-        String ownerAndRepo = extractOwnerAndRepo(workspace.getSource());
+        String ownerAndRepo = String.join("/", extractOwnerAndRepo(workspace.getSource()));
         String apiUrl = workspace.getVcs().getApiUrl() + "/projects/" + ownerAndRepo + "/hooks/" + webhookRemoteId;
 
         ResponseEntity<String> response = callGitlabApi(workspace.getVcs().getAccessToken(), "", apiUrl, HttpMethod.DELETE);
         if (response.getStatusCode().value() == 204) {
             log.info("Webhook with remote hook id {} on repository {} deleted successfully", webhookRemoteId, ownerAndRepo);
         } else {
-            log.warn("Failed to delete webhook with remote hook id {} on repository {}, message {}", webhookRemoteId, ownerAndRepo, response.getBody());
+            log.warn("Failed to delete webhook with remote hook id {} on repository {}, message {}",
+                    webhookRemoteId, ownerAndRepo, response.getBody());
         }
     }
 
@@ -209,23 +200,12 @@ public class GitLabWebhookService extends WebhookServiceBase {
 
         HttpEntity<String> entity = new HttpEntity<>(body, headers);
         RestTemplate restTemplate = new RestTemplate();
-
         return restTemplate.exchange(apiUrl, httpMethod, entity, String.class);
     }
 
-    private String extractOwnerAndRepo(String sourceUrl) {
-        // Example input: https://gitlab.angkas.dev/dbdoyc/platform/platform-engineering.git
-        URI uri = URI.create(sourceUrl);
-        String path = uri.getPath();
-
-        if (path.endsWith(".git")) {
-            path = path.substring(0, path.length() - 4);
-        }
-
-        if (path.startsWith("/")) {
-            path = path.substring(1);
-        }
-
-        return path; // Returns full path_with_namespace: dbdoyc/platform/platform-engineering
+    @Override
+    protected List<String> extractOwnerAndRepo(String sourceUrl) {
+        String[] parts = sourceUrl.replace(".git", "").split("/");
+        return Arrays.asList(parts[parts.length - 2], parts[parts.length - 1]);
     }
 }
