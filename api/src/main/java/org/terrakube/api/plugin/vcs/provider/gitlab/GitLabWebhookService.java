@@ -7,7 +7,6 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Base64;
 import java.util.Map;
 
@@ -47,7 +46,6 @@ public class GitLabWebhookService extends WebhookServiceBase {
         result.setBranch("");
         result.setVia("GitLab");
         try {
-            // Verify the GitLab token
             String tokenHeader = headers.get("x-gitlab-token");
             if (tokenHeader == null || !tokenHeader.equals(token)) {
                 log.error("X-Gitlab-Token header is missing or doesn't match!");
@@ -56,45 +54,42 @@ public class GitLabWebhookService extends WebhookServiceBase {
             }
 
             result.setValid(true);
-
             log.info("Parsing GitLab webhook payload");
 
-            // Extract event
             JsonNode rootNode = objectMapper.readTree(jsonPayload);
             String event = rootNode.path("object_kind").asText();
             result.setEvent(event);
 
             if (event.equals("push")) {
-                // Extract branch from the ref
                 String[] ref = rootNode.path("ref").asText().split("/");
-                String[] extractedBranch = Arrays.copyOfRange(ref, 2, ref.length);
-                result.setBranch(String.join("/", extractedBranch));
+                String branch = String.join("/", java.util.Arrays.copyOfRange(ref, 2, ref.length));
+                result.setBranch(branch);
 
-                // Extract the user who triggered the webhook
-                JsonNode userNode = rootNode.path("user_username");
-                String user = userNode.asText();
+                String user = rootNode.path("user_username").asText();
                 result.setCreatedBy(user);
 
                 result.setFileChanges(new ArrayList<>());
+
                 try {
                     GitlabWebhookModel gitlabWebhookModel = new ObjectMapper().readValue(jsonPayload, GitlabWebhookModel.class);
                     result.setCommit(gitlabWebhookModel.getCheckoutSha());
+
                     gitlabWebhookModel.getCommits().forEach(commitData -> {
-                        for (String gitlabmodified : commitData.getModified()) {
-                            result.getFileChanges().add(gitlabmodified);
-                            log.info("Modified Gitlab Object: {}", gitlabmodified);
-                        }
-                        for (String gitlabRemoved : commitData.getRemoved()) {
-                            result.getFileChanges().add(gitlabRemoved);
-                            log.info("Removed Gitlab Object: {}", gitlabRemoved);
-                        }
-                        for (String gitlabAdded : commitData.getAdded()) {
-                            result.getFileChanges().add(gitlabAdded);
-                            log.info("New Gitlab Object: {}", gitlabAdded);
-                        }
+                        commitData.getModified().forEach(modified -> {
+                            result.getFileChanges().add(modified);
+                            log.info("Modified Gitlab Object: {}", modified);
+                        });
+                        commitData.getRemoved().forEach(removed -> {
+                            result.getFileChanges().add(removed);
+                            log.info("Removed Gitlab Object: {}", removed);
+                        });
+                        commitData.getAdded().forEach(added -> {
+                            result.getFileChanges().add(added);
+                            log.info("New Gitlab Object: {}", added);
+                        });
                     });
                 } catch (JsonProcessingException e) {
-                    log.error(e.getMessage());
+                    log.error("Error parsing commit data", e);
                 }
             }
         } catch (JsonProcessingException e) {
@@ -107,30 +102,30 @@ public class GitLabWebhookService extends WebhookServiceBase {
         String id = "";
         String secret = Base64.getEncoder()
                 .encodeToString(workspace.getId().toString().getBytes(StandardCharsets.UTF_8));
-        String ownerAndRepo = String.join("/", extractOwnerAndRepo(workspace.getSource()));
+        String ownerAndRepo = extractOwnerAndRepo(workspace.getSource());
         String token = workspace.getVcs().getAccessToken();
         String webhookUrl = String.format("https://%s/webhook/v1/%s", hostname, webhookId);
+
         RestTemplate restTemplate = new RestTemplate();
 
-        // Create the headers
         HttpHeaders headers = new HttpHeaders();
         headers.set("Accept", "application/json");
         headers.set("Content-Type", "application/json");
-        headers.set("Authorization", "Bearer " + workspace.getVcs().getAccessToken());
+        headers.set("Authorization", "Bearer " + token);
 
-        // Create the body
-        String body = "{\"url\":\"" + webhookUrl
-                + "\",\"push_events\":\"true\",\"enable_ssl_verification\":\"false\",\"token\":\"" + secret + "\"}";
+        String body = String.format("{\"url\":\"%s\",\"push_events\":true,\"enable_ssl_verification\":false,\"token\":\"%s\"}",
+                webhookUrl, secret);
 
         log.info(body);
-        // Create the entity
+
         HttpEntity<String> entity = new HttpEntity<>(body, headers);
         String projectId = "";
+
         try {
             log.info("Search gitlab project id using {}, {}", ownerAndRepo, workspace.getVcs().getApiUrl());
             projectId = getGitlabProjectId(ownerAndRepo, token, workspace.getVcs().getApiUrl());
         } catch (InterruptedException | IOException e) {
-            log.error(e.getMessage());
+            log.error("Failed to get GitLab project ID", e);
             Thread.currentThread().interrupt();
         }
 
@@ -138,21 +133,21 @@ public class GitLabWebhookService extends WebhookServiceBase {
                 .fromHttpUrl(workspace.getVcs().getApiUrl() + "/projects/" + projectId + "/hooks")
                 .build(true).toUri();
 
-        // Make the request using the GitLab API
         ResponseEntity<String> response = restTemplate.exchange(
                 gitlabUri, HttpMethod.POST, entity, String.class);
 
-        // Extract the id from the response
         if (response.getStatusCode().value() == 201) {
             try {
                 JsonNode rootNode = objectMapper.readTree(response.getBody());
                 id = rootNode.path("id").asText();
             } catch (Exception e) {
-                log.error("Error parsing JSON response", e);
+                log.error("Error parsing webhook creation response", e);
             }
 
             log.info("GitLab Hook created successfully for workspace {}/{} with id {}",
                     workspace.getOrganization().getName(), workspace.getName(), id);
+        } else {
+            log.error("Failed to create webhook: {}", response.getBody());
         }
 
         return id;
@@ -171,21 +166,20 @@ public class GitLabWebhookService extends WebhookServiceBase {
         HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
 
         if (response.statusCode() == 200) {
-            log.info("Response from Gitlab: {}", response.body());
-            ObjectMapper objectMapper = new ObjectMapper();
-            JsonNode jsonArray = objectMapper.readTree(response.body());
+            log.info("Response from GitLab: {}", response.body());
+            JsonNode jsonNode = objectMapper.readTree(response.body());
 
-            for (JsonNode project : jsonArray) {
-                String pathWithNamespace = project.path("path_with_namespace").asText();
+            for (JsonNode projectNode : jsonNode) {
+                String pathWithNamespace = projectNode.path("path_with_namespace").asText();
                 if (pathWithNamespace.equalsIgnoreCase(ownerAndRepo)) {
-                    projectId = project.path("id").asText();
-                    log.info("Exact match found: Project ID = {}", projectId);
+                    projectId = projectNode.path("id").asText();
+                    log.info("Matched Project ID: {}", projectId);
                     break;
                 }
             }
 
             if (projectId.isEmpty()) {
-                log.warn("No exact match found for project: {}", ownerAndRepo);
+                log.warn("No matching GitLab project found for {}", ownerAndRepo);
             }
         } else {
             log.error("Failed to retrieve project ID. HTTP Status: {}", response.statusCode());
@@ -196,7 +190,7 @@ public class GitLabWebhookService extends WebhookServiceBase {
     }
 
     public void deleteWebhook(Workspace workspace, String webhookRemoteId) {
-        String ownerAndRepo = String.join("/", extractOwnerAndRepo(workspace.getSource()));
+        String ownerAndRepo = extractOwnerAndRepo(workspace.getSource());
         String apiUrl = workspace.getVcs().getApiUrl() + "/projects/" + ownerAndRepo + "/hooks/" + webhookRemoteId;
 
         ResponseEntity<String> response = callGitlabApi(workspace.getVcs().getAccessToken(), "", apiUrl, HttpMethod.DELETE);
@@ -213,6 +207,25 @@ public class GitLabWebhookService extends WebhookServiceBase {
         headers.set("Authorization", "Bearer " + token);
         headers.set("Content-Type", "application/json");
 
-        return makeApiRequest(headers, body, apiUrl, httpMethod);
+        HttpEntity<String> entity = new HttpEntity<>(body, headers);
+        RestTemplate restTemplate = new RestTemplate();
+
+        return restTemplate.exchange(apiUrl, httpMethod, entity, String.class);
+    }
+
+    private String extractOwnerAndRepo(String sourceUrl) {
+        // Example input: https://gitlab.angkas.dev/dbdoyc/platform/platform-engineering.git
+        URI uri = URI.create(sourceUrl);
+        String path = uri.getPath();
+
+        if (path.endsWith(".git")) {
+            path = path.substring(0, path.length() - 4);
+        }
+
+        if (path.startsWith("/")) {
+            path = path.substring(1);
+        }
+
+        return path; // Returns full path_with_namespace: dbdoyc/platform/platform-engineering
     }
 }
