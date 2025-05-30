@@ -11,7 +11,7 @@ jobs:
       matrix:
         os: [jammy, jammy-arm, alpaquita]
     env:
-      VERSION: 2.26.0
+      VERSION: 2.26.1
     runs-on: ${{ matrix.os == 'jammy-arm' && 'ARM64' || 'ubuntu-latest' }}
     steps:
     - uses: actions/checkout@v4
@@ -70,7 +70,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     env:
-      VERSION: 2.26.0
+      VERSION: 2.26.1
     steps:
     - name: Set up Docker config
       run: |
