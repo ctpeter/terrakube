@@ -43,12 +43,6 @@ jobs:
       if: matrix.os == 'jammy-arm'
       run: echo "VERSION=${{ env.VERSION }}-arm" >> $GITHUB_ENV
 
-    - name: Build and Push UI Images
-      if: matrix.os == 'jammy' || matrix.os == 'jammy-arm'
-      working-directory: ./ui
-      run: |
-        docker build --build-arg REACT_APP_TERRAKUBE_VERSION=v${{ env.VERSION }} -t azbuilder/terrakube-ui:${{ env.VERSION }} --push .
-
     - name: Update POM Version
       run: mvn versions:set-property -Dproperty=revision -DnewVersion=${{ env.VERSION }} -DgenerateBackupPoms=false
 
@@ -72,13 +66,6 @@ jobs:
         docker tag $IMAGE_ID vient/terrakube-api-server:latest
         docker push vient/terrakube-api-server:${{ env.VERSION }}
 
-    - name: Tag and Push Registry Images
-      run: |
-        IMAGE_ID=$(docker images open-registry:${{ env.VERSION }} -q)
-        docker tag $IMAGE_ID azbuilder/open-registry:${{ env.VERSION }}
-        docker tag $IMAGE_ID azbuilder/open-registry:latest
-        docker push azbuilder/open-registry:${{ env.VERSION }}
-
   merge:
     needs: build
     runs-on: ubuntu-latest
@@ -101,55 +88,3 @@ jobs:
           --tag vient/terrakube-api-server:latest \
           vient/terrakube-api-server:${{ env.VERSION }} \
           vient/terrakube-api-server:${{ env.VERSION }}-arm
-
-        # Registry
-        docker buildx imagetools create \
-          --tag azbuilder/open-registry:${{ env.VERSION }} \
-          --tag azbuilder/open-registry:latest \
-          azbuilder/open-registry:${{ env.VERSION }} \
-          azbuilder/open-registry:${{ env.VERSION }}-arm
-
-        # Executor
-        docker buildx imagetools create \
-          --tag azbuilder/executor:${{ env.VERSION }} \
-          --tag azbuilder/executor:latest \
-          azbuilder/executor:${{ env.VERSION }} \
-          azbuilder/executor:${{ env.VERSION }}-arm
-
-        # UI
-        docker buildx imagetools create \
-          --tag azbuilder/terrakube-ui:${{ env.VERSION }} \
-          --tag azbuilder/terrakube-ui:latest \
-          azbuilder/terrakube-ui:${{ env.VERSION }} \
-          azbuilder/terrakube-ui:${{ env.VERSION }}-arm
-
-    - name: Delete ARM Images
-      run: |
-          USERNAME="${{ secrets.DOCKER_USER }}"
-          PASSWORD="${{ secrets.DOCKER_PASSWORD }}"
-          ORGANIZATION="azbuilder"
-          IMAGES=("api-server" "open-registry" "executor" "terrakube-ui")
-          TAG="${{ env.VERSION }}-arm"
-
-          login_data() {
-          cat <<EOF
-          {
-            "username": "$USERNAME",
-            "password": "$PASSWORD"
-          }
-          EOF
-          }
-
-          TOKEN=$(curl -s -H "Content-Type: application/json" -X POST -d "$(login_data)" "https://hub.docker.com/v2/users/login/" | jq -r .token)
-
-          for IMAGE in "${IMAGES[@]}"; do
-            DELETE_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "https://hub.docker.com/v2/repositories/${ORGANIZATION}/${IMAGE}/tags/${TAG}/" \
-            -X DELETE \
-            -H "Authorization: JWT ${TOKEN}")
-
-            if [ "$DELETE_RESPONSE" -eq 204 ]; then
-              echo "Successfully deleted ${ORGANIZATION}/${IMAGE}:${TAG} from Docker Hub."
-            else
-              echo "Failed to delete ${ORGANIZATION}/${IMAGE}:${TAG}. HTTP status code: $DELETE_RESPONSE"
-            fi
-          done
