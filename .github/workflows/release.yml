@@ -1,8 +1,9 @@
 name: Release Terrakube
 
 on: 
-  release:
-    types: [created]
+  push:
+    branches:
+      - fix
 
 jobs:
   build:
@@ -10,7 +11,7 @@ jobs:
       matrix:
         os: [jammy, jammy-arm, alpaquita]
     env:
-      VERSION: ${{ github.event.release.tag_name }}
+      VERSION: 2.26.0
     runs-on: ${{ matrix.os == 'jammy-arm' && 'ARM64' || 'ubuntu-latest' }}
     steps:
     - uses: actions/checkout@v4
@@ -64,33 +65,12 @@ jobs:
         USER_NAME: ${{ secrets.USER_NAME }}
         ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
 
-    - name: Tag and Push Executor Images
-      run: |
-          IMAGE_ID=$(docker images executor:${{ env.VERSION }} -q)
-      
-          # Install Git
-          if [ "${{ matrix.os }}" == "alpaquita" ]; then
-            docker tag $IMAGE_ID executortemp
-          else
-            docker run --user="root" --entrypoint launcher $IMAGE_ID "apt-get update && apt-get install git jq curl -y"
-            if [ "${{ matrix.os }}" == "jammy-arm" ]; then
-              docker commit --change='ENTRYPOINT ["/cnb/process/web"]' --change='USER heroku' $(docker ps -lq) executortemp
-            else
-              docker commit --change='ENTRYPOINT ["/cnb/process/web"]' --change='USER cnb' $(docker ps -lq) executortemp
-            fi
-          fi
-      
-          IMAGE_ID=$(docker images executortemp -q)
-          docker tag $IMAGE_ID azbuilder/executor:${{ env.VERSION }}
-          docker tag $IMAGE_ID azbuilder/executor:latest
-          docker push azbuilder/executor:${{ env.VERSION }}
-
     - name: Tag and Push API Images
       run: |
         IMAGE_ID=$(docker images api-server:${{ env.VERSION }} -q)
-        docker tag $IMAGE_ID azbuilder/api-server:${{ env.VERSION }}
-        docker tag $IMAGE_ID azbuilder/api-server:latest
-        docker push azbuilder/api-server:${{ env.VERSION }}
+        docker tag $IMAGE_ID vient/terrakube-api-server:${{ env.VERSION }}
+        docker tag $IMAGE_ID vient/terrakube-api-server:latest
+        docker push vient/terrakube-api-server:${{ env.VERSION }}
 
     - name: Tag and Push Registry Images
       run: |
@@ -103,7 +83,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     env:
-      VERSION: ${{ github.event.release.tag_name }}
+      VERSION: 2.26.0
     steps:
     - name: Set up Docker config
       run: |
@@ -117,10 +97,10 @@ jobs:
       run: |
         # API
         docker buildx imagetools create \
-          --tag azbuilder/api-server:${{ env.VERSION }} \
-          --tag azbuilder/api-server:latest \
-          azbuilder/api-server:${{ env.VERSION }} \
-          azbuilder/api-server:${{ env.VERSION }}-arm
+          --tag vient/terrakube-api-server:${{ env.VERSION }} \
+          --tag vient/terrakube-api-server:latest \
+          vient/terrakube-api-server:${{ env.VERSION }} \
+          vient/terrakube-api-server:${{ env.VERSION }}-arm
 
         # Registry
         docker buildx imagetools create \
