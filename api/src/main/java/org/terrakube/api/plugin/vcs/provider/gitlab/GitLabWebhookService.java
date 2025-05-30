@@ -9,7 +9,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
-import java.util.List;
 import java.util.Map;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -56,14 +55,13 @@ public class GitLabWebhookService extends WebhookServiceBase {
             }
 
             result.setValid(true);
-
             log.info("Parsing GitLab webhook payload");
 
             JsonNode rootNode = objectMapper.readTree(jsonPayload);
             String event = rootNode.path("object_kind").asText();
             result.setEvent(event);
 
-            if (event.equals("push")) {
+            if ("push".equals(event)) {
                 String[] ref = rootNode.path("ref").asText().split("/");
                 String[] extractedBranch = Arrays.copyOfRange(ref, 2, ref.length);
                 result.setBranch(String.join("/", extractedBranch));
@@ -81,12 +79,10 @@ public class GitLabWebhookService extends WebhookServiceBase {
                             result.getFileChanges().add(modified);
                             log.info("Modified Gitlab Object: {}", modified);
                         }
-
                         for (String removed : commitData.getRemoved()) {
                             result.getFileChanges().add(removed);
                             log.info("Removed Gitlab Object: {}", removed);
                         }
-
                         for (String added : commitData.getAdded()) {
                             result.getFileChanges().add(added);
                             log.info("New Gitlab Object: {}", added);
@@ -96,16 +92,17 @@ public class GitLabWebhookService extends WebhookServiceBase {
                     log.error(e.getMessage());
                 }
             }
+
         } catch (JsonProcessingException e) {
             log.error("Error parsing JSON payload", e);
         }
+
         return result;
     }
 
     public String createWebhook(Workspace workspace, String webhookId) {
         String id = "";
-        String secret = Base64.getEncoder()
-                .encodeToString(workspace.getId().toString().getBytes(StandardCharsets.UTF_8));
+        String secret = Base64.getEncoder().encodeToString(workspace.getId().toString().getBytes(StandardCharsets.UTF_8));
         String ownerAndRepo = String.join("/", extractOwnerAndRepo(workspace.getSource()));
         String token = workspace.getVcs().getAccessToken();
         String webhookUrl = String.format("https://%s/webhook/v1/%s", hostname, webhookId);
@@ -120,9 +117,9 @@ public class GitLabWebhookService extends WebhookServiceBase {
                 + "\",\"push_events\":\"true\",\"enable_ssl_verification\":\"false\",\"token\":\"" + secret + "\"}";
 
         log.info(body);
-
         HttpEntity<String> entity = new HttpEntity<>(body, headers);
         String projectId = "";
+
         try {
             log.info("Search gitlab project id using {}, {}", ownerAndRepo, workspace.getVcs().getApiUrl());
             projectId = getGitlabProjectId(ownerAndRepo, token, workspace.getVcs().getApiUrl());
@@ -135,8 +132,7 @@ public class GitLabWebhookService extends WebhookServiceBase {
                 .fromHttpUrl(workspace.getVcs().getApiUrl() + "/projects/" + projectId + "/hooks")
                 .build(true).toUri();
 
-        ResponseEntity<String> response = restTemplate.exchange(
-                gitlabUri, HttpMethod.POST, entity, String.class);
+        ResponseEntity<String> response = restTemplate.exchange(gitlabUri, HttpMethod.POST, entity, String.class);
 
         if (response.getStatusCode().value() == 201) {
             try {
@@ -155,7 +151,7 @@ public class GitLabWebhookService extends WebhookServiceBase {
 
     private String getGitlabProjectId(String ownerAndRepo, String accessToken, String gitlabBaseUrl)
             throws IOException, InterruptedException {
-        String projectId = "";
+
         HttpClient client = HttpClient.newHttpClient();
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(gitlabBaseUrl + "/search?scope=projects&search=" + ownerAndRepo))
@@ -167,16 +163,14 @@ public class GitLabWebhookService extends WebhookServiceBase {
         HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
 
         if (response.statusCode() == 200) {
-            log.info("Response from Gitlab: {}", response.body());
+            log.info("Response from GitLab: {}", response.body());
             JsonNode jsonNode = objectMapper.readTree(response.body());
-
-            projectId = jsonNode.get(0).get("id").asText();
-            log.info("Parsed Project ID: {}", projectId);
+            return jsonNode.get(0).get("id").asText();
         } else {
             log.error("Failed to retrieve project ID. HTTP Status: {}", response.statusCode());
             log.error("Response: {}", response.body());
+            return "";
         }
-        return projectId;
     }
 
     public void deleteWebhook(Workspace workspace, String webhookRemoteId) {
@@ -187,8 +181,7 @@ public class GitLabWebhookService extends WebhookServiceBase {
         if (response.getStatusCode().value() == 204) {
             log.info("Webhook with remote hook id {} on repository {} deleted successfully", webhookRemoteId, ownerAndRepo);
         } else {
-            log.warn("Failed to delete webhook with remote hook id {} on repository {}, message {}",
-                    webhookRemoteId, ownerAndRepo, response.getBody());
+            log.warn("Failed to delete webhook with remote hook id {} on repository {}, message {}", webhookRemoteId, ownerAndRepo, response.getBody());
         }
     }
 
@@ -198,14 +191,15 @@ public class GitLabWebhookService extends WebhookServiceBase {
         headers.set("Authorization", "Bearer " + token);
         headers.set("Content-Type", "application/json");
 
-        HttpEntity<String> entity = new HttpEntity<>(body, headers);
-        RestTemplate restTemplate = new RestTemplate();
-        return restTemplate.exchange(apiUrl, httpMethod, entity, String.class);
+        return new RestTemplate().exchange(apiUrl, httpMethod, new HttpEntity<>(body, headers), String.class);
     }
 
     @Override
-    protected List<String> extractOwnerAndRepo(String sourceUrl) {
+    protected String[] extractOwnerAndRepo(String sourceUrl) {
         String[] parts = sourceUrl.replace(".git", "").split("/");
-        return Arrays.asList(parts[parts.length - 2], parts[parts.length - 1]);
+        return new String[]{
+            parts[parts.length - 2],
+            parts[parts.length - 1]
+        };
     }
 }
