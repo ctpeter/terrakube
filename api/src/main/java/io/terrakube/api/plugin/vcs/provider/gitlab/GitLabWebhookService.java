@@ -146,16 +146,15 @@ public class GitLabWebhookService extends WebhookServiceBase {
         String ownerAndRepo = extractOwnerAndRepoGitlab(workspace.getSource());
         try {
             GitlabMergeRequestModel mrModel = objectMapper.readValue(jsonPayload, GitlabMergeRequestModel.class);
-			JsonNode rootNode = objectMapper.readTree(jsonPayload);
+            JsonNode rootNode = objectMapper.readTree(jsonPayload);
 
             String action = mrModel.getObjectAttributes().getAction();
 
-			// Ignore update events triggered by resolving blocking discussions
-			if ("update".equals(action) && rootNode.has("blocking_discussions_resolved")) {
-				log.info("Ignoring GitLab MR update event: blocking discussions resolved");
-				result.setValid(false);
-				return result;
-			}
+            if ("update".equals(action) && !isCodeChangeUpdate(rootNode)) {
+                log.info("Ignoring GitLab MR update event with no source branch change (metadata-only update)");
+                result.setValid(false);
+                return result;
+            }
 
             switch (action) {
                 case "open":
@@ -191,6 +190,14 @@ public class GitLabWebhookService extends WebhookServiceBase {
         }
 
         return result;
+    }
+
+    private boolean isCodeChangeUpdate(JsonNode rootNode) {
+        String oldrev = rootNode.path("object_attributes").path("oldrev").asText("");
+        if (!oldrev.isEmpty()) {
+            return true;
+        }
+        return rootNode.path("changes").has("target_branch");
     }
 
     private WebhookResult handleNoteEvent(WebhookResult result, String jsonPayload, Workspace workspace) {
@@ -880,9 +887,8 @@ public class GitLabWebhookService extends WebhookServiceBase {
             GitlabMergeRequestModel mrModel = objectMapper.readValue(jsonPayload, GitlabMergeRequestModel.class);
             String action = mrModel.getObjectAttributes().getAction();
 
-            // Ignore update events triggered by resolving blocking discussions
-            if ("update".equals(action) && rootNode.has("blocking_discussions_resolved")) {
-                log.info("Ignoring GitLab MR update event: blocking discussions resolved");
+            if ("update".equals(action) && !isCodeChangeUpdate(rootNode)) {
+                log.info("Ignoring GitLab MR update event with no source branch change (metadata-only update)");
                 result.setValid(false);
                 return;
             }
